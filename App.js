@@ -1,94 +1,202 @@
-import { Canvas, useImage, Image, Group, Text, FontWeight, matchFont } from "@shopify/react-native-skia";
-import { useEffect, useState } from "react";
 import { Platform, useWindowDimensions } from "react-native";
-import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
-import { Easing, Extrapolation, interpolate, runOnJS, useAnimatedReaction, useDerivedValue, useFrameCallback, useSharedValue, withRepeat, withSequence, withTiming } from "react-native-reanimated";
+import { Canvas, useImage, Image, Group, Text, matchFont } from "@shopify/react-native-skia";
+import { useSharedValue, withTiming, Easing, withSequence, withRepeat, useFrameCallback, useDerivedValue, interpolate, Extrapolation, useAnimatedReaction, runOnJS, cancelAnimation } from "react-native-reanimated";
+import { useEffect, useState } from "react";
+import { GestureHandlerRootView, GestureDetector, Gesture } from "react-native-gesture-handler";
 
 const GRAVITY = 1000;
 const JUMP_FORCE = -500;
 
+const pipeWidth = 104;
+const pipeHeight = 640;
+
 const App = () => {
 	const { width, height } = useWindowDimensions();
 	const [score, setScore] = useState(0);
+
 	const bg = useImage(require("./assets/sprites/background-day.png"));
 	const bird = useImage(require("./assets/sprites/yellowbird-upflap.png"));
-	const pipeUp = useImage(require("./assets/sprites/pipe-green - inverted.png"));
 	const pipeBottom = useImage(require("./assets/sprites/pipe-green.png"));
+	const pipeTop = useImage(require("./assets/sprites/pipe-green - inverted.png"));
 	const base = useImage(require("./assets/sprites/base.png"));
 
-	const pipeOffset = 0;
-
-	const x = useSharedValue(width);
+	const gameOver = useSharedValue(false);
+	const pipeX = useSharedValue(width);
 
 	const birdY = useSharedValue(height / 3);
-	const birdPos = {
-		x: width / 4,
-	};
+	const birdX = width / 4;
 	const birdYVelocity = useSharedValue(0);
 
+	const pipeOffset = useSharedValue(0);
+	const topPipeY = useDerivedValue(() => pipeOffset.value - 320);
+	const bottomPipeY = useDerivedValue(() => height - 320 + pipeOffset.value);
+
+	const pipesSpeed = useDerivedValue(() => {
+		return interpolate(score, [0, 20], [1, 2]);
+	});
+
+	const obstacles = useDerivedValue(() => [
+		// bottom pipe
+		{
+			x: pipeX.value,
+			y: bottomPipeY.value,
+			h: pipeHeight,
+			w: pipeWidth,
+		},
+		// top pipe
+		{
+			x: pipeX.value,
+			y: topPipeY.value,
+			h: pipeHeight,
+			w: pipeWidth,
+		},
+	]);
+
 	useEffect(() => {
-		x.value = withRepeat(withSequence(withTiming(-200, { duration: 3000, easing: Easing.linear }), withTiming(width)), -1);
+		moveTheMap();
 	}, []);
 
+	const moveTheMap = () => {
+		pipeX.value = withSequence(
+			withTiming(width, { duration: 0 }),
+			withTiming(-150, {
+				duration: 3000 / pipesSpeed.value,
+				easing: Easing.linear,
+			}),
+			withTiming(width, { duration: 0 })
+		);
+	};
+
+	// Scoring system
 	useAnimatedReaction(
-		() => {
-			return x.value;
-		},
+		() => pipeX.value,
 		(currentValue, previousValue) => {
-			const middle = birdPos.x;
-			if (previousValue && currentValue !== previousValue && currentValue <= middle && previousValue > middle) {
+			const middle = birdX;
+
+			// change offset for the position of the next gap
+			if (previousValue && currentValue < -100 && previousValue > -100) {
+				pipeOffset.value = Math.random() * 400 - 200;
+				cancelAnimation(pipeX);
+				runOnJS(moveTheMap)();
+			}
+
+			if (currentValue !== previousValue && previousValue && currentValue <= middle && previousValue > middle) {
+				// do something ✨
 				runOnJS(setScore)(score + 1);
 			}
 		}
 	);
 
+	const isPointCollidingWithRect = (point, rect) => {
+		"worklet";
+		return (
+			point.x >= rect.x && // right of the left edge AND
+			point.x <= rect.x + rect.w && // left of the right edge AND
+			point.y >= rect.y && // below the top AND
+			point.y <= rect.y + rect.h // above the bottom
+		);
+	};
+
+	// Collision detection
+	useAnimatedReaction(
+		() => birdY.value,
+		(currentValue, previousValue) => {
+			const center = {
+				x: birdX + 32,
+				y: birdY.value + 24,
+			};
+
+			// Ground collision detection
+			if (currentValue > height - 100 || currentValue < 0) {
+				gameOver.value = true;
+			}
+
+			const isColliding = obstacles.value.some((rect) => isPointCollidingWithRect(center, rect));
+			if (isColliding) {
+				gameOver.value = true;
+			}
+		}
+	);
+
+	useAnimatedReaction(
+		() => gameOver.value,
+		(currentValue, previousValue) => {
+			if (currentValue && !previousValue) {
+				cancelAnimation(pipeX);
+			}
+		}
+	);
+
 	useFrameCallback(({ timeSincePreviousFrame: dt }) => {
-		if (!dt) {
+		if (!dt || gameOver.value) {
 			return;
 		}
-
-		birdY.value = birdY.value + (birdYVelocity * dt) / 1000;
+		birdY.value = birdY.value + (birdYVelocity.value * dt) / 1000;
 		birdYVelocity.value = birdYVelocity.value + (GRAVITY * dt) / 1000;
 	});
 
+	const restartGame = () => {
+		"worklet";
+		birdY.value = height / 3;
+		birdYVelocity.value = 0;
+		gameOver.value = false;
+		pipeX.value = width;
+		runOnJS(moveTheMap)();
+		runOnJS(setScore)(0);
+	};
+
 	const gesture = Gesture.Tap().onStart(() => {
-		birdYVelocity.value = JUMP_FORCE;
+		if (gameOver.value) {
+			// restart
+			restartGame();
+		} else {
+			// jump
+			birdYVelocity.value = JUMP_FORCE;
+		}
 	});
 
 	const birdTransform = useDerivedValue(() => {
-		return [{ rotate: interpolate(birdYVelocity.value, [-500, 500], [-0.5, 0.5], Extrapolation.CLAMP) }];
+		return [
+			{
+				rotate: interpolate(birdYVelocity.value, [-500, 500], [-0.5, 0.5], Extrapolation.CLAMP),
+			},
+		];
 	});
 	const birdOrigin = useDerivedValue(() => {
 		return { x: width / 4 + 32, y: birdY.value + 24 };
 	});
 
 	const fontFamily = Platform.select({ ios: "Helvetica", default: "serif" });
-	const fontStyle = { fontFamily, fontSize: 40, fontWeight: "bold" };
+	const fontStyle = {
+		fontFamily,
+		fontSize: 40,
+		fontWeight: "bold",
+	};
 	const font = matchFont(fontStyle);
 
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
 			<GestureDetector gesture={gesture}>
 				<Canvas style={{ width, height }}>
-					{/*BG*/}
-					<Image image={bg} fit={"cover"} width={width} height={height}></Image>
+					{/* BG */}
+					<Image image={bg} width={width} height={height} fit={"cover"} />
 
-					{/*BIRD*/}
+					{/* Pipes */}
+					<Image image={pipeTop} y={topPipeY} x={pipeX} width={pipeWidth} height={pipeHeight} />
+					<Image image={pipeBottom} y={bottomPipeY} x={pipeX} width={pipeWidth} height={pipeHeight} />
+
+					{/* Base */}
+					<Image image={base} width={width} height={150} y={height - 75} x={0} fit={"cover"} />
+
+					{/* Bird */}
 					<Group transform={birdTransform} origin={birdOrigin}>
-						<Image image={bird} y={birdY} x={birdPos.x} width={64} height={48}></Image>
+						<Image image={bird} y={birdY} x={birdX} width={64} height={48} />
 					</Group>
 
-					{/*PIPE TOP*/}
-					<Image image={pipeUp} y={pipeOffset - 320} x={x} width={103} height={640}></Image>
+					{/* Sim */}
 
-					{/*PIPE BOTTOM*/}
-					<Image image={pipeBottom} y={height - 320 + pipeOffset} x={x} width={103} height={640}></Image>
-
-					{/*BASE*/}
-					<Image image={base} y={height - 75} x={0} width={width} height={150} fit={"cover"}></Image>
-
-					{/*Score*/}
-					<Text x={width / 2 - 12} y={100} text={score.toString()} font={font}></Text>
+					{/* Score */}
+					<Text x={width / 2 - 30} y={100} text={score.toString()} font={font} />
 				</Canvas>
 			</GestureDetector>
 		</GestureHandlerRootView>
