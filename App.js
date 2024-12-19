@@ -1,10 +1,11 @@
-import { Canvas, useImage, Image } from "@shopify/react-native-skia";
+import { Canvas, useImage, Image, Group } from "@shopify/react-native-skia";
 import { useEffect } from "react";
 import { useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
-import { Easing, useFrameCallback, useSharedValue, withRepeat, withSequence, withTiming } from "react-native-reanimated";
+import { Easing, Extrapolation, interpolate, useDerivedValue, useFrameCallback, useSharedValue, withRepeat, withSequence, withTiming } from "react-native-reanimated";
 
-const GRAVITY = 500;
+const GRAVITY = 1000;
+const JUMP_FORCE = -500;
 
 const App = () => {
 	const { width, height } = useWindowDimensions();
@@ -15,9 +16,17 @@ const App = () => {
 	const base = useImage(require("./assets/sprites/base.png"));
 
 	const pipeOffset = 0;
-	const x = useSharedValue(width - 50);
-	const birdY = useSharedValue(0);
-	const birdYVelocity = useSharedValue(100);
+
+	const x = useSharedValue(width);
+
+	const birdY = useSharedValue(height / 3);
+	const birdYVelocity = useSharedValue(0);
+	const birdTransform = useDerivedValue(() => {
+		return [{ rotate: interpolate(birdYVelocity.value, [-500, 500], [-0.5, 0.5], Extrapolation.CLAMP) }];
+	});
+	const birdOrigin = useDerivedValue(() => {
+		return { x: width / 4 + 32, y: birdY.value + 24 };
+	});
 
 	useFrameCallback(({ timeSincePreviousFrame: dt }) => {
 		if (!dt) {
@@ -33,7 +42,7 @@ const App = () => {
 	}, []);
 
 	const gesture = Gesture.Tap().onStart(() => {
-		birdYVelocity.value = -300;
+		birdYVelocity.value = JUMP_FORCE;
 	});
 
 	return (
@@ -44,7 +53,9 @@ const App = () => {
 					<Image image={bg} fit={"cover"} width={width} height={height}></Image>
 
 					{/*BIRD*/}
-					<Image image={bird} y={birdY} x={width / 4} width={64} height={48}></Image>
+					<Group transform={birdTransform} origin={birdOrigin}>
+						<Image image={bird} y={birdY} x={width / 4} width={64} height={48}></Image>
+					</Group>
 
 					{/*PIPE TOP*/}
 					<Image image={pipeUp} y={pipeOffset - 320} x={x} width={103} height={640}></Image>
